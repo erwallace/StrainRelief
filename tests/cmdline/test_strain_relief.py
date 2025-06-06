@@ -27,29 +27,6 @@ def test_strain_relief(min_method: str, eval_method: str):
 
 @pytest.mark.integration
 @pytest.mark.gpu
-def test_strain_relief_w_mace():
-    with initialize(version_base="1.1", config_path="../../src/strain_relief/hydra_config"):
-        cfg = compose(
-            config_name="default",
-            overrides=[
-                f"io.input.parquet_path={test_dir}/data/target.parquet",
-                "io.input.id_col_name=SMILES",
-                "minimisation@local_min=mace",
-                "minimisation@global_min=mace",
-                "local_min.fmax=0.50",
-                "model=mace",
-                f"local_min.model_paths={test_dir}/models/MACE.model",
-                f"global_min.model_paths={test_dir}/models/MACE.model",
-                f"model.model_paths={test_dir}/models/MACE.model",
-                "conformers.numConfs=1",
-            ],
-        )
-    df = load_parquet(parquet_path=cfg.io.input.parquet_path, id_col_name="SMILES")
-    strain_relief(df, cfg)
-
-
-@pytest.mark.integration
-@pytest.mark.gpu
 def test_strain_relief_w_esen(esen_model_path: str):
     with initialize(version_base="1.1", config_path="../../src/strain_relief/hydra_config"):
         cfg = compose(

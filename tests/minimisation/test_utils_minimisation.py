@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
-from mace.calculators import MACECalculator
 from rdkit import Chem
+from fairchem.core import FAIRChemCalculator
+from fairchem.core.units.mlip_unit import load_predict_unit
 from strain_relief.calculators import RDKitMMFFCalculator
 from strain_relief.io import rdkit_to_ase
 from strain_relief.minimisation.utils_minimisation import (
@@ -13,7 +14,7 @@ from strain_relief.minimisation.utils_minimisation import (
 
 
 @pytest.mark.gpu
-@pytest.mark.parametrize("calculator_fixture", ["mace_calculator", "esen_calculator"])
+@pytest.mark.parametrize("calculator_fixture", ["esen_calculator"])
 def test_method_min_nnp(mols: dict[str : Chem.Mol], calculator_fixture: str, request):
     calculator = request.getfixturevalue(calculator_fixture)
     energies, mols = method_min(
@@ -49,7 +50,7 @@ def test_method_min_mmff(request, fixture: dict[str : Chem.Mol], force_field: st
     assert all([mol.GetNumConformers() == 0 for mol in mols.values()])
 
 
-@pytest.mark.parametrize("calculator_fixture", ["mace_calculator", "esen_calculator"])
+@pytest.mark.parametrize("calculator_fixture", ["esen_calculator"])
 def test__method_min_nnp(mol_w_confs: Chem.Mol, calculator_fixture: str, request):
     calculator = request.getfixturevalue(calculator_fixture)
     energies, mol = _method_min(
@@ -109,11 +110,10 @@ def test_remove_non_converged(
     ],
 )
 def test_run_minimisation(
-    mol: Chem.Mol, mace_model_path: str, maxIters: int, fmax: float, fexit: float, expected: int
+    mol: Chem.Mol, esen_model_path: str, maxIters: int, fmax: float, fexit: float, expected: int
 ):
-    calculator = MACECalculator(
-        model_paths=str(mace_model_path), device="cuda", default_dtype="float32", fmax=fmax
-    )
+    esen_predictor = load_predict_unit(path=esen_model_path, device="cuda")
+    calculator = FAIRChemCalculator(esen_predictor, task_name="omol")
     [(_, conf)] = rdkit_to_ase(mol)
     _, converged, _ = run_minimisation(conf, calculator, maxIters, fmax, fexit)
     assert converged == expected
