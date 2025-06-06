@@ -2,8 +2,7 @@ rdkit
 ase
 numpy
 pandas
-torch==2.5.1
-mace-torch
+fairchem-core
 omegaconf
 hydra-core
 pyarrow
