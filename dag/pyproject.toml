@@ -1,0 +1,42 @@
+[project]
+name = "dag"
+version = "0.1.0"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+    "dagster==1.13.9",
+    "strain-relief",
+]
+
+[project.optional-dependencies]
+# Dev tooling: dg CLI + webserver, needed to run Dagster (`dg dev`).
+# Exposed as an extra so `uv pip install -e ".[dev]"` installs it.
+dev = [
+    "dagster-dg-cli",
+    "dagster-webserver",
+    "dagster_duckdb_pandas",
+]
+
+[dependency-groups]
+dev = [
+    "dagster-dg-cli",
+    "dagster-webserver",
+]
+
+[tool.uv.sources]
+strain-relief = { path = "..", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+force-include = { "pyproject.toml" = "pyproject.toml" }
+
+[tool.dg]
+directory_type = "project"
+
+[tool.dg.project]
+root_module = "dag"
+registry_modules = [
+    "dag.components.*",
+]
