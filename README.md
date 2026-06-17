@@ -14,7 +14,6 @@ StrainRelief calculates the ligand strain of docked poses and has a suite of dif
 This update focuses on accelerating the StrainRelief backend and increasig usability through simpler configurations and workflows:
 
 - Molecular optimisation are now paralellised using the `neural-optimiser` [package](https://github.com/erwallace/neural-optimiser) providing a 3x speed-up.
-- Conformer generation is now orders-of-magnitude faster using Nvidia's nvMolKit [package](https://github.com/NVIDIA-Digital-Bio/nvMolKit).
 - New simplified hyra configuration. An example of the full configuration is given [here](./examples/example_config.yaml).
 
 **Note:** this introduces changes that are not backwards-compatible with previous versions.
@@ -92,13 +91,13 @@ strain-relief \
     conformers.numConfs=1 \
 ```
 
-More examples are given [here](./examples/examples.sh), including the command used for the calculations in the StrainRelief paper.
+More examples are given [here](./examples/example_scripts.sh), including the command used for the calculations in the StrainRelief paper.
 
 ### Adding Your Own Calculator
 
 Add a new `Calculator` [class](https://github.com/erwallace/neural-optimiser/blob/main/src/neural_optimiser/calculators/base.py) from `neural-optimiser` to the `strain_relief/calculators/` directory. This can be as simple as implementing a wrapper around an existing ASE calculator:
 ```python
-from neural_rotamers.calculators.base import Calculator
+from neural_optimiser.calculators.base import Calculator
 
 class YourCalculator(Calculator):
 
@@ -113,7 +112,7 @@ class YourCalculator(Calculator):
 ```
 **Note:** `MACECalculator` and `FAIRChemCalculator` from `neural-optimiser` use a `from_atomic_data` helper method. This converts `ConformerBatch` objects to `AtomicData` model inputs in a batched process; a workflow bottleneck not handled by either the MACE or FAIRChem internal ASE calculators. I would recommend implementing something similar for high throughput workflows.
 
-Add a new config to `hydra_config/calculators/your_calculator.yaml`:
+Add a new config to `hydra_config/calculator/your_calculator.yaml`:
 
 ```
 _target_: strain_relief.calculators.your_calculator.YourCalculator
