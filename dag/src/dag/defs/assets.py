@@ -1,7 +1,9 @@
 import dagster as dg
 import pandas as pd
 from neural_optimiser.conformers import Conformer, ConformerBatch
+from rdkit import Chem
 from strain_relief.conformers import generate_conformers
+from strain_relief.constants import MOL_COL_NAME
 from strain_relief.data_types import MolsDict
 from strain_relief.io import load_parquet, process_output, to_mols_dict
 from strain_relief.optimisation import run_optimisation
@@ -16,18 +18,32 @@ from .configs import (
 from .resources import GlobalOptimiserResource, LocalOptimiserResource
 
 
-@dg.asset
-def preprocess_data(config: InputConfig) -> dict:
-    """Load input data and convert to MolsDict."""
+@dg.asset(io_manager_key="pandas_io_manager")
+def input_df(config: InputConfig) -> pd.DataFrame:
+    """Load the input parquet of docked molecules.
+
+    Drop the live RDKit ``mol`` column before returning: it cannot be serialised to the
+    DuckDB pandas io manager. Molecules persist as ``mol_bytes`` and are reconstructed
+    downstream (``to_mols_dict`` / ``aggregate_results``).
+    """
     df = load_parquet(parquet_path=config.parquet_path)
-    docked_mols: MolsDict = to_mols_dict(df, **config.model_dump())
-    return docked_mols
+    return df.drop(columns=[MOL_COL_NAME], errors="ignore")
+
+
+@dg.asset
+def docked_mols(input_df: pd.DataFrame, config: InputConfig) -> dict:
+    """Convert the input DataFrame to a MolsDict."""
+    # DuckDB returns the BLOB column as bytearray; Chem.Mol (used inside to_mols_dict to
+    # rebuild the dropped mol column) only accepts bytes.
+    input_df["mol_bytes"] = input_df["mol_bytes"].apply(bytes)
+    mols: MolsDict = to_mols_dict(input_df, **config.model_dump())
+    return mols
 
 
 @dg.asset(io_manager_key="pytorch_io_manager")
-def conformers(preprocess_data: dict, config: ConformerConfig) -> ConformerBatch:
+def conformers(docked_mols: dict, config: ConformerConfig) -> ConformerBatch:
     """Generate conformers for the input molecules."""
-    generated_mols = generate_conformers(preprocess_data, **config.model_dump())
+    generated_mols = generate_conformers(docked_mols, **config.model_dump())
     generated_batch: ConformerBatch = ConformerBatch.cat(
         [ConformerBatch.from_rdkit(**generated_mols[id]) for id in generated_mols]
     )
@@ -37,12 +53,12 @@ def conformers(preprocess_data: dict, config: ConformerConfig) -> ConformerBatch
 @dg.asset(io_manager_key="pytorch_io_manager")
 def local_optimisation(
     local_optimiser: LocalOptimiserResource,
-    preprocess_data: ConformerBatch,
+    docked_mols: dict,
     config: LocalOptimisationConfig,
 ) -> ConformerBatch:
     """Run local optimisation on the docked conformers."""
     docked_batch = ConformerBatch.from_data_list(
-        [Conformer.from_rdkit(**preprocess_data[id]) for id in preprocess_data]
+        [Conformer.from_rdkit(**docked_mols[id]) for id in docked_mols]
     )
     local_minima = run_optimisation(
         docked_batch,
@@ -75,17 +91,23 @@ def global_optimisation(
 
 @dg.asset(io_manager_key="pandas_io_manager")
 def aggregate_results(
-    preprocess_data: ConformerBatch,
+    input_df: pd.DataFrame,
+    docked_mols: dict,
     local_optimisation: ConformerBatch,
     global_optimisation: ConformerBatch,
     config: OutputConfig,
 ) -> pd.DataFrame:
     """Aggregate results from local and global optimisation and save to output parquet file."""
     docked_batch = ConformerBatch.from_data_list(
-        [Conformer.from_rdkit(**preprocess_data[id]) for id in preprocess_data]
+        [Conformer.from_rdkit(**docked_mols[id]) for id in docked_mols]
     )
+    # input_df came through the DuckDB io manager without the live mol column; rebuild it
+    # from mol_bytes (returned as bytearray by DuckDB; Chem.Mol needs bytes) so
+    # process_output can drop it (mol_col_name defaults to "mol").
+    if MOL_COL_NAME not in input_df.columns:
+        input_df[MOL_COL_NAME] = input_df["mol_bytes"].apply(lambda b: Chem.Mol(bytes(b)))
     output_df = process_output(
-        pd.DataFrame(), docked_batch, local_optimisation, global_optimisation, **config.model_dump()
+        input_df, docked_batch, local_optimisation, global_optimisation, **config.model_dump()
     )
     return output_df
 

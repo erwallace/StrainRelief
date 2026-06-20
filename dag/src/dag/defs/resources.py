@@ -1,3 +1,4 @@
+import os
 from typing import Annotated, Literal
 
 import dagster as dg
@@ -61,7 +62,20 @@ class BFGSConfig(dg.Config):
         return BFGS(max_step=self.max_step, steps=self.steps, fmax=self.fmax, fexit=self.fexit)
 
 
-OptimiserConfig = BFGSConfig
+class _BaseOptimiserConfig(dg.Config):
+    """Placeholder so OptimiserConfig is a discriminated union (i.e. renders as a selector,
+    uniform with CalculatorConfig). The base Optimiser is abstract, so this is never selected;
+    it exists only until a second concrete optimiser (e.g. LBFGS) is added."""
+
+    kind: Literal["base"] = "base"
+
+    def build(self) -> Optimiser:
+        raise NotImplementedError(
+            "Select a concrete optimiser (e.g. bfgs); 'base' is a placeholder."
+        )
+
+
+OptimiserConfig = Annotated[BFGSConfig | _BaseOptimiserConfig, Field(discriminator="kind")]
 
 
 # --------------------------------------------------------------------------------------
@@ -110,15 +124,11 @@ class OptimiserResource(dg.ConfigurableResource):
 
 
 class LocalOptimiserResource(OptimiserResource):
-    """Local optimisation defaults (hydra default.yaml: local_optimiser)."""
-
-    spec: OptimiserConfig = BFGSConfig(fmax=0.50, fexit=5)
+    """Local optimiser (hydra default.yaml: local_optimiser); defaults bound at registration."""
 
 
 class GlobalOptimiserResource(OptimiserResource):
-    """Global optimisation defaults (hydra default.yaml: global_optimiser)."""
-
-    spec: OptimiserConfig = BFGSConfig(fmax=0.05, fexit=25)
+    """Global optimiser (hydra default.yaml: global_optimiser); defaults bound at registration."""
 
 
 class PyTorchIOManager(dg.ConfigurableIOManager):
@@ -126,6 +136,7 @@ class PyTorchIOManager(dg.ConfigurableIOManager):
 
     def handle_output(self, context: dg.OutputContext, obj: object):
         output_path = f"{self.base_path}/{context.step_key}/{context.name}.pt"
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         torch.save(obj, output_path)
 
     def load_input(self, context: dg.InputContext) -> object:
@@ -150,7 +161,11 @@ def resources():
             "pytorch_io_manager": PyTorchIOManager(base_path="../data"),
             # Calculator + optimisers (config-driven; calculator shared).
             "calculator": calculator,
-            "local_optimiser": LocalOptimiserResource(calculator=calculator),
-            "global_optimiser": GlobalOptimiserResource(calculator=calculator),
+            "local_optimiser": LocalOptimiserResource(
+                calculator=calculator, spec=BFGSConfig(fmax=0.50, fexit=5)
+            ),
+            "global_optimiser": GlobalOptimiserResource(
+                calculator=calculator, spec=BFGSConfig(fmax=0.05, fexit=25)
+            ),
         },
     )

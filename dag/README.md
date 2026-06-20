@@ -62,15 +62,81 @@ python -c "import dag, strain_relief, dagster, torch_cluster; print('OK')"
 dagster definitions validate -m dag.definitions   # or: dg check defs
 ```
 
-### Running Dagster
+### Running the pipeline
 
-Start the Dagster UI web server:
+The pipeline is exposed as a single job, `all_assets`, covering every asset:
+`input_df → docked_mols → conformers → local_optimisation → global_optimisation →
+aggregate_results → plot_results`.
+
+Run from the `dag/` directory with the venv activated. `run.yaml` is a complete example
+config (input path, calculator/optimiser selection, per-asset settings).
+
+**Headless (one-shot):**
 
 ```bash
-dg dev
+dg launch --job all_assets --config run.yaml
 ```
 
-Open http://localhost:3000 in your browser to see the project.
+> Use `--config` (a YAML file), **not** `--config-file`. Launch the whole job with
+> `--job all_assets`, not `--assets "*"` — the `"*"` selector path pulls in an antlr
+> grammar that conflicts with the antlr version `omegaconf`/`hydra` pin.
+
+**Interactive UI:**
+
+```bash
+dg dev   # then open http://localhost:3000
+```
+
+In the UI, select the assets → **Materialize** → paste the contents of `run.yaml` into the
+Launchpad config editor → Launch.
+
+#### Changing the input
+
+Point `input_df` / `docked_mols` at your own parquet in `run.yaml` (paths are relative to
+the `dag/` working directory):
+
+```yaml
+ops:
+  input_df:
+    config:
+      parquet_path: ../data/example_ligboundconf_input.parquet
+  docked_mols:
+    config:
+      parquet_path: ../data/example_ligboundconf_input.parquet   # same file
+```
+
+To switch calculator/optimiser, edit the `resources:` block (e.g. `mace` → `mmff94`).
+
+### Where outputs are stored
+
+Each asset's return value is persisted by its assigned IO manager (configured in
+`resources.py`). The IO manager for an asset determines how *its output* is stored; a
+downstream asset loads that input via the **upstream** asset's manager.
+
+| Asset | IO manager | Location |
+| --- | --- | --- |
+| `input_df` | `pandas_io_manager` (DuckDB) | table in `../data/db.duckdb` |
+| `docked_mols` | default (filesystem, pickle) | Dagster instance storage (see note) |
+| `conformers` | `pytorch_io_manager` | `../data/conformers/result.pt` |
+| `local_optimisation` | `pytorch_io_manager` | `../data/local_optimisation/result.pt` |
+| `global_optimisation` | `pytorch_io_manager` | `../data/global_optimisation/result.pt` |
+| `aggregate_results` | `pandas_io_manager` (DuckDB) | table in `../data/db.duckdb` |
+| `plot_results` | default (returns `None`) | — |
+
+The `pytorch_io_manager` writes to `{base_path}/{asset}/{output}.pt` with `base_path=../data`;
+the `pandas_io_manager` writes each DataFrame to a table inside the DuckDB file at
+`../data/db.duckdb`.
+
+**Final result:** in addition to the IO-managed outputs above, `aggregate_results` calls
+`process_output`, which writes the merged results parquet to the path in
+`OutputConfig.parquet_path` — by default **`../data/example_output.parquet`** (columns
+include `id`, `local_min_e`, `global_min_e`, `ligand_strain`, `passes_strain_filter`). This
+is the human-readable end product.
+
+> **Note on the default IO manager / Dagster home.** With no `DAGSTER_HOME` set, `dg launch`
+> uses a temporary instance directory (auto-created, ephemeral), so `docked_mols` and run
+> metadata do not persist between runs. To keep them, point `DAGSTER_HOME` at a directory:
+> `export DAGSTER_HOME=$PWD/.dagster_home`.
 
 ## Learn more
 
