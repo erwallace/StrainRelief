@@ -1,3 +1,5 @@
+import os
+
 import dagster as dg
 import pandas as pd
 from neural_optimiser.conformers import Conformer, ConformerBatch
@@ -15,27 +17,23 @@ from .configs import (
     LocalOptimisationConfig,
     OutputConfig,
 )
-from .resources import GlobalOptimiserResource, LocalOptimiserResource
+from .resources import DATA_DIR, GlobalOptimiserResource, LocalOptimiserResource
 
 
 @dg.asset(io_manager_key="pandas_io_manager")
 def input_df(config: InputConfig) -> pd.DataFrame:
     """Load the input parquet of docked molecules.
 
-    Drop the live RDKit ``mol`` column before returning: it cannot be serialised to the
-    DuckDB pandas io manager. Molecules persist as ``mol_bytes`` and are reconstructed
-    downstream (``to_mols_dict`` / ``aggregate_results``).
+    Drop the live RDKit ``mol`` column before returning: it cannot be serialised to parquet.
+    Molecules persist as ``mol_bytes`` and are reconstructed downstream.
     """
     df = load_parquet(parquet_path=config.parquet_path)
-    return df.drop(columns=[MOL_COL_NAME], errors="ignore")
+    return df.drop(columns=[config.mol_col_name or MOL_COL_NAME], errors="ignore")
 
 
 @dg.asset
 def docked_mols(input_df: pd.DataFrame, config: InputConfig) -> dict:
     """Convert the input DataFrame to a MolsDict."""
-    # DuckDB returns the BLOB column as bytearray; Chem.Mol (used inside to_mols_dict to
-    # rebuild the dropped mol column) only accepts bytes.
-    input_df["mol_bytes"] = input_df["mol_bytes"].apply(bytes)
     mols: MolsDict = to_mols_dict(input_df, **config.model_dump())
     return mols
 
@@ -91,6 +89,7 @@ def global_optimisation(
 
 @dg.asset(io_manager_key="pandas_io_manager")
 def aggregate_results(
+    context: dg.AssetExecutionContext,
     input_df: pd.DataFrame,
     docked_mols: dict,
     local_optimisation: ConformerBatch,
@@ -101,13 +100,16 @@ def aggregate_results(
     docked_batch = ConformerBatch.from_data_list(
         [Conformer.from_rdkit(**docked_mols[id]) for id in docked_mols]
     )
-    # input_df came through the DuckDB io manager without the live mol column; rebuild it
-    # from mol_bytes (returned as bytearray by DuckDB; Chem.Mol needs bytes) so
-    # process_output can drop it (mol_col_name defaults to "mol").
     if MOL_COL_NAME not in input_df.columns:
-        input_df[MOL_COL_NAME] = input_df["mol_bytes"].apply(lambda b: Chem.Mol(bytes(b)))
+        input_df[MOL_COL_NAME] = input_df["mol_bytes"].apply(Chem.Mol)
+
+    cfg = config.model_dump()
+    run_dir = f"{DATA_DIR}/{context.run_id}"
+    os.makedirs(run_dir, exist_ok=True)
+    cfg["parquet_path"] = f"{run_dir}/{os.path.basename(cfg['parquet_path'])}"
+
     output_df = process_output(
-        input_df, docked_batch, local_optimisation, global_optimisation, **config.model_dump()
+        input_df, docked_batch, local_optimisation, global_optimisation, **cfg
     )
     return output_df
 

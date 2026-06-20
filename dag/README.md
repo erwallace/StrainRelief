@@ -8,11 +8,6 @@ This project depends on the parent [`strain-relief`](../) package via a local
 editable source (`[tool.uv.sources]` in `pyproject.toml`), so changes to the
 parent's `src/strain_relief` are picked up immediately.
 
-> **Why not a plain `uv sync`?** `strain-relief` pulls in `torch-cluster`, a
-> native extension with **no prebuilt wheel for arm64 macOS**. It must be
-> compiled from source, which requires `torch` to already be present and the
-> build to run with isolation disabled. The steps below handle that ordering.
-
 Ensure [`uv`](https://docs.astral.sh/uv/) is installed (see their
 [installation docs](https://docs.astral.sh/uv/getting-started/installation/)).
 
@@ -64,7 +59,7 @@ dagster definitions validate -m dag.definitions   # or: dg check defs
 
 ### Running the pipeline
 
-The pipeline is exposed as a single job, `all_assets`, covering every asset:
+The pipeline is exposed as a single job, `strain_relief`, covering every asset:
 `input_df → docked_mols → conformers → local_optimisation → global_optimisation →
 aggregate_results → plot_results`.
 
@@ -74,12 +69,8 @@ config (input path, calculator/optimiser selection, per-asset settings).
 **Headless (one-shot):**
 
 ```bash
-dg launch --job all_assets --config run.yaml
+dg launch --job strain_relief --config run.yaml
 ```
-
-> Use `--config` (a YAML file), **not** `--config-file`. Launch the whole job with
-> `--job all_assets`, not `--assets "*"` — the `"*"` selector path pulls in an antlr
-> grammar that conflicts with the antlr version `omegaconf`/`hydra` pin.
 
 **Interactive UI:**
 
@@ -109,34 +100,27 @@ To switch calculator/optimiser, edit the `resources:` block (e.g. `mace` → `mm
 
 ### Where outputs are stored
 
-Each asset's return value is persisted by its assigned IO manager (configured in
-`resources.py`). The IO manager for an asset determines how *its output* is stored; a
-downstream asset loads that input via the **upstream** asset's manager.
+Every run is assigned a unique Dagster **run id** (a UUID), and all file outputs are written
+under a per-run directory: `<repo>/data/<run_id>/`.
 
-| Asset | IO manager | Location |
+Outputs use a flat, per-asset layout: `data/<run_id>/<asset_name>.<ext>`.
+
+| Asset | IO manager | Location (under `data/<run_id>/`) |
 | --- | --- | --- |
-| `input_df` | `pandas_io_manager` (DuckDB) | table in `../data/db.duckdb` |
+| `input_df` | `pandas_io_manager` (parquet) | `input_df.parquet` |
 | `docked_mols` | default (filesystem, pickle) | Dagster instance storage (see note) |
-| `conformers` | `pytorch_io_manager` | `../data/conformers/result.pt` |
-| `local_optimisation` | `pytorch_io_manager` | `../data/local_optimisation/result.pt` |
-| `global_optimisation` | `pytorch_io_manager` | `../data/global_optimisation/result.pt` |
-| `aggregate_results` | `pandas_io_manager` (DuckDB) | table in `../data/db.duckdb` |
+| `conformers` | `pytorch_io_manager` | `conformers.pt` |
+| `local_optimisation` | `pytorch_io_manager` | `local_optimisation.pt` |
+| `global_optimisation` | `pytorch_io_manager` | `global_optimisation.pt` |
+| `aggregate_results` | `pandas_io_manager` (parquet) | `aggregate_results.parquet` |
 | `plot_results` | default (returns `None`) | — |
 
-The `pytorch_io_manager` writes to `{base_path}/{asset}/{output}.pt` with `base_path=../data`;
-the `pandas_io_manager` writes each DataFrame to a table inside the DuckDB file at
-`../data/db.duckdb`.
-
 **Final result:** in addition to the IO-managed outputs above, `aggregate_results` calls
-`process_output`, which writes the merged results parquet to the path in
-`OutputConfig.parquet_path` — by default **`../data/example_output.parquet`** (columns
-include `id`, `local_min_e`, `global_min_e`, `ligand_strain`, `passes_strain_filter`). This
-is the human-readable end product.
-
-> **Note on the default IO manager / Dagster home.** With no `DAGSTER_HOME` set, `dg launch`
-> uses a temporary instance directory (auto-created, ephemeral), so `docked_mols` and run
-> metadata do not persist between runs. To keep them, point `DAGSTER_HOME` at a directory:
-> `export DAGSTER_HOME=$PWD/.dagster_home`.
+`process_output`, which writes the merged results parquet into the same run directory using
+the filename from `OutputConfig.parquet_path` — by default
+**`data/<run_id>/example_output.parquet`** (columns include `id`, `local_min_e`,
+`global_min_e`, `ligand_strain`, `passes_strain_filter`). This is the human-readable end
+product.
 
 ## Learn more
 

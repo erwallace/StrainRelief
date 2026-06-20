@@ -1,14 +1,21 @@
 import os
+from pathlib import Path
 from typing import Annotated, Literal
 
 import dagster as dg
+import pandas as pd
 import torch
-from dagster_duckdb_pandas import DuckDBPandasIOManager
 from neural_optimiser.calculators import FAIRChemCalculator, MACECalculator, MMFF94Calculator
 from neural_optimiser.calculators.base import Calculator
 from neural_optimiser.optimisers import BFGS
 from neural_optimiser.optimisers.base import Optimiser
 from pydantic import Field
+
+# Root directory for run outputs. Each run writes under DATA_DIR/<run_id>/ (see the IO
+# managers below and aggregate_results' final parquet), so runs never overwrite each other.
+# Absolute (resolved from the repo layout) so it is independent of the launch directory.
+# resources.py -> defs -> dag -> src -> dag(project) -> repo root; data/ sits at the repo root.
+DATA_DIR = str(Path(__file__).resolve().parents[4] / "data")
 
 
 class MACEConfig(dg.Config):
@@ -132,18 +139,33 @@ class GlobalOptimiserResource(OptimiserResource):
 
 
 class PyTorchIOManager(dg.ConfigurableIOManager):
+    """Stores tensors at {base_path}/{run_id}/{asset}.pt (run-scoped)."""
+
     base_path: str
 
     def handle_output(self, context: dg.OutputContext, obj: object):
-        output_path = f"{self.base_path}/{context.step_key}/{context.name}.pt"
+        output_path = f"{self.base_path}/{context.run_id}/{context.step_key}.pt"
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         torch.save(obj, output_path)
 
     def load_input(self, context: dg.InputContext) -> object:
-        input_path = (
-            f"{self.base_path}/{context.upstream_output.step_key}/{context.upstream_output.name}.pt"
-        )
-        return torch.load(input_path)
+        out = context.upstream_output
+        return torch.load(f"{self.base_path}/{out.run_id}/{out.step_key}.pt")
+
+
+class ParquetIOManager(dg.ConfigurableIOManager):
+    """Stores DataFrames at {base_path}/{run_id}/{step}.parquet (run-scoped)."""
+
+    base_path: str
+
+    def handle_output(self, context: dg.OutputContext, obj: pd.DataFrame):
+        output_path = f"{self.base_path}/{context.run_id}/{context.step_key}.parquet"
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        obj.to_parquet(output_path)
+
+    def load_input(self, context: dg.InputContext) -> pd.DataFrame:
+        out = context.upstream_output
+        return pd.read_parquet(f"{self.base_path}/{out.run_id}/{out.step_key}.parquet")
 
 
 @dg.definitions
@@ -157,8 +179,8 @@ def resources():
             # IO Managers specify how the OUTPUT of an asset is handled.
             # The INPUT is handled by the upstream asset's output manager.
             "io_manager": dg.FilesystemIOManager(),  # default if not specified.
-            "pandas_io_manager": DuckDBPandasIOManager(database="../data/db.duckdb"),
-            "pytorch_io_manager": PyTorchIOManager(base_path="../data"),
+            "pandas_io_manager": ParquetIOManager(base_path=DATA_DIR),
+            "pytorch_io_manager": PyTorchIOManager(base_path=DATA_DIR),
             # Calculator + optimisers (config-driven; calculator shared).
             "calculator": calculator,
             "local_optimiser": LocalOptimiserResource(

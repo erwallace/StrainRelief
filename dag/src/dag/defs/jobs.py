@@ -1,6 +1,6 @@
 import dagster as dg
 
-strain_relief = dg.define_asset_job("all_assets", selection=dg.AssetSelection.all())
+strain_relief = dg.define_asset_job("strain_relief", selection=dg.AssetSelection.all())
 
 
 @dg.definitions

@@ -13,7 +13,6 @@ dependencies = [
 dev = [
     "dagster-dg-cli",
     "dagster-webserver",
-    "dagster_duckdb_pandas",
 ]
 
 [dependency-groups]
