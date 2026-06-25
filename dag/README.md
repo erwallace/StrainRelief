@@ -12,23 +12,11 @@ Ensure [`uv`](https://docs.astral.sh/uv/) is installed (see their
 [installation docs](https://docs.astral.sh/uv/getting-started/installation/)).
 
 ```bash
-# 1. Create the venv on Python 3.11 (strain-relief requires ==3.11.*)
-uv venv --python 3.11
-
-# 2. Install torch first — torch-cluster needs it at build time.
-#    2.8.0 is the version torch-cluster 1.6.3 compiles cleanly against.
-uv pip install "torch==2.8.0"
-
-# 3. Build tools required because the install runs with --no-build-isolation
-uv pip install hatchling editables
-
-# 4. Install this project (editable) + strain-relief, building torch-cluster
-#    from source against the installed torch.
-uv pip install -e . --no-build-isolation
-
-# 5. Install the dev tooling (dg CLI + webserver) needed to run Dagster,
-#    declared as the `dev` extra in pyproject.toml.
-uv pip install -e ".[dev]" --no-build-isolation
+uv venv --python 3.11                                    # strain-relief requires 3.11
+uv pip install "torch==2.8.0"                            # torch-cluster needs torch at build time
+uv pip install hatchling editables                       # build tools (--no-build-isolation)
+uv pip install -e ".[dev]" --no-build-isolation          # this project + strain-relief + dg CLI
+uv pip install "antlr4-python3-runtime>=4.13,<4.14"      # Dagster needs antlr 4.13, not omegaconf's 4.9
 ```
 
 Then activate the virtual environment:
@@ -38,17 +26,6 @@ Then activate the virtual environment:
 | MacOS | ```source .venv/bin/activate``` |
 | Windows | ```.venv\Scripts\activate``` |
 
-#### Troubleshooting
-
-- **`ModuleNotFoundError: No module named 'torch'`** when building
-  `torch-cluster` — run step 2 before step 4, and keep `--no-build-isolation`.
-- **`libc++abi: terminating ... std::length_error`** on `import torch_cluster`
-  — the cached `torch-cluster` binary was built against a different `torch`.
-  Force a clean rebuild against the installed torch:
-
-  ```bash
-  uv pip install --force-reinstall --no-build-isolation --no-deps --no-cache "torch-cluster==1.6.3"
-  ```
 
 #### Verify the install
 
@@ -59,68 +36,50 @@ dagster definitions validate -m dag.definitions   # or: dg check defs
 
 ### Running the pipeline
 
-The pipeline is exposed as a single job, `strain_relief`, covering every asset:
-`input_df → docked_mols → conformers → local_minima → global_minima →
-aggregate_results → plot_results`.
+One job, `strain_relief`: `input_df → docked_mols → conformers → local_minima → global_minima →
+aggregate_results → plot_results`. The compute-heavy assets (`conformers`, `local_minima`,
+`global_minima`) are partitioned into chunks of `CHUNK_SIZE` ligands (env var, default 50) so each
+chunk runs as its own process/run and the calculator model loads once per chunk.
 
-Run from the `dag/` directory with the venv activated. `run.yaml` is a complete example
-config (input path, calculator/optimiser selection, per-asset settings).
-
-**Headless (one-shot):**
+Run from `dag/` with the venv active and a persistent `DAGSTER_HOME` (so chunk partitions persist):
 
 ```bash
-dg launch --job strain_relief --config run.yaml
+export DAGSTER_HOME=$PWD/.dagster_home
 ```
 
-**Interactive UI:**
+**Single chunk** (input fits in one `CHUNK_SIZE`) — one command runs the whole job:
 
 ```bash
-dg dev   # then open http://localhost:3000
+dg launch --job strain_relief --partition 0 --config run.yaml
 ```
 
-In the UI, select the assets → **Materialize** → paste the contents of `run.yaml` into the
-Launchpad config editor → Launch.
+**Many chunks** (parallel) — use a backfill in the UI (`aggregate_results` fans in every chunk, so
+it must run after all chunks; multi-run partition ranges need the daemon, not `dg launch`):
 
-#### Changing the input
-
-Point `input_df` / `docked_mols` at your own parquet in `run.yaml` (paths are relative to
-the `dag/` working directory):
-
-```yaml
-ops:
-  input_df:
-    config:
-      parquet_path: ../data/example_ligboundconf_input.parquet
-  docked_mols:
-    config:
-      parquet_path: ../data/example_ligboundconf_input.parquet   # same file
+```bash
+dg dev   # http://localhost:3000
 ```
 
-To switch calculator/optimiser, edit the `resources:` block (e.g. `mace` → `mmff94`).
+1. Materialize `input_df` + `docked_mols` once — this registers the chunk partitions.
+2. **Backfill** `strain_relief` over the chunk range — Dagster runs the compute assets one run per
+   chunk (in parallel) and `aggregate_results` / `plot_results` once at the end.
+
+Point `input_df` / `docked_mols` at your own parquet and switch calculator/optimiser in `run.yaml`.
+Change the chunk size with the `CHUNK_SIZE` env var (default 50).
 
 ### Where outputs are stored
 
-Every run is assigned a unique Dagster **run id** (a UUID), and all file outputs are written
-under a per-run directory: `<repo>/data/<run_id>/`.
+Layout: `data/<asset>/result[_<chunk>].<ext>` (the `_<chunk>` suffix is on the partitioned compute
+assets only).
 
-Outputs use a flat, per-asset layout: `data/<run_id>/<asset_name>.<ext>`.
+| Asset | Location |
+| --- | --- |
+| `input_df` | `data/input_df/result.parquet` |
+| `conformers` / `local_minima` / `global_minima` | `data/<asset>/result_<chunk>.pt` |
+| `aggregate_results` | `data/aggregate_results/result.parquet` |
+| `output` (final, human-readable) | `data/output.parquet` |
 
-| Asset | IO manager | Location (under `data/<run_id>/`) |
-| --- | --- | --- |
-| `input_df` | `pandas_io_manager` (parquet) | `input_df.parquet` |
-| `docked_mols` | default (filesystem, pickle) | Dagster instance storage (see note) |
-| `conformers` | `pytorch_io_manager` | `conformers.pt` |
-| `local_minima` | `pytorch_io_manager` | `local_minima.pt` |
-| `global_minima` | `pytorch_io_manager` | `global_minima.pt` |
-| `aggregate_results` | `pandas_io_manager` (parquet) | `aggregate_results.parquet` |
-| `plot_results` | default (returns `None`) | — |
-
-**Final result:** in addition to the IO-managed outputs above, `aggregate_results` calls
-`process_output`, which writes the merged results parquet into the same run directory using
-the filename from `OutputConfig.parquet_path` — by default
-**`data/<run_id>/example_output.parquet`** (columns include `id`, `local_min_e`,
-`global_min_e`, `ligand_strain`, `passes_strain_filter`). This is the human-readable end
-product.
+`docked_mols` and `plot_results` use Dagster's default IO manager (instance storage).
 
 ## Learn more
 

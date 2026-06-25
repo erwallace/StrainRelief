@@ -1,3 +1,4 @@
+import math
 import os
 
 import dagster as dg
@@ -25,7 +26,14 @@ from .configs import (
     OutputConfig,
     PlotConfig,
 )
+from .partitions import CHUNK_SIZE, chunk_partitions
 from .resources import DATA_DIR, GlobalOptimiserResource, LocalOptimiserResource
+
+
+def _chunk(docked_mols: dict, partition_key: str) -> dict:
+    """Row-range slice of the (master-ordered) docked_mols for a chunk partition."""
+    start = int(partition_key) * CHUNK_SIZE
+    return dict(list(docked_mols.items())[start : start + CHUNK_SIZE])
 
 
 @dg.asset(io_manager_key="pandas_io_manager")
@@ -48,15 +56,24 @@ def input_df(config: InputConfig) -> dg.MaterializeResult:
 
 
 @dg.asset
-def docked_mols(input_df: pd.DataFrame, config: InputConfig) -> dict:
-    """Convert the input DataFrame to a MolsDict."""
+def docked_mols(
+    context: dg.AssetExecutionContext, input_df: pd.DataFrame, config: InputConfig
+) -> dict:
+    """Convert the input DataFrame to a MolsDict and register the chunk partitions."""
     mols: MolsDict = to_mols_dict(input_df, **config.model_dump())
+    n_chunks = math.ceil(len(mols) / CHUNK_SIZE)
+    context.instance.add_dynamic_partitions(
+        chunk_partitions.name, [str(i) for i in range(n_chunks)]
+    )
     return mols
 
 
-@dg.asset(io_manager_key="pytorch_io_manager")
-def conformers(docked_mols: dict, config: ConformerConfig) -> dg.MaterializeResult:
-    """Generate conformers for the input molecules."""
+@dg.asset(partitions_def=chunk_partitions, io_manager_key="pytorch_io_manager")
+def conformers(
+    context: dg.AssetExecutionContext, docked_mols: dict, config: ConformerConfig
+) -> dg.MaterializeResult:
+    """Generate conformers for this chunk's molecules."""
+    docked_mols = _chunk(docked_mols, context.partition_key)
     generated_mols = generate_conformers(docked_mols, **config.model_dump())
     generated_batch: ConformerBatch = ConformerBatch.cat(
         [ConformerBatch.from_rdkit(**generated_mols[id]) for id in generated_mols]
@@ -79,13 +96,15 @@ def conformers(docked_mols: dict, config: ConformerConfig) -> dg.MaterializeResu
     )
 
 
-@dg.asset(io_manager_key="pytorch_io_manager")
+@dg.asset(partitions_def=chunk_partitions, io_manager_key="pytorch_io_manager")
 def local_minima(
+    context: dg.AssetExecutionContext,
     local_optimiser: LocalOptimiserResource,
     docked_mols: dict,
     config: LocalOptimisationConfig,
 ) -> dg.MaterializeResult:
-    """Locally optimised (minimised) conformers from the docked poses."""
+    """Locally optimised (minimised) conformers from this chunk's docked poses."""
+    docked_mols = _chunk(docked_mols, context.partition_key)
     docked_batch = ConformerBatch.from_data_list(
         [Conformer.from_rdkit(**docked_mols[id]) for id in docked_mols]
     )
@@ -107,13 +126,13 @@ def local_minima(
     )
 
 
-@dg.asset(io_manager_key="pytorch_io_manager")
+@dg.asset(partitions_def=chunk_partitions, io_manager_key="pytorch_io_manager")
 def global_minima(
     global_optimiser: GlobalOptimiserResource,
     conformers: ConformerBatch,
     config: GlobalOptimisationConfig,
 ) -> dg.MaterializeResult:
-    """Globally optimised (minimised) conformers from the generated conformers."""
+    """Globally optimised (minimised) conformers from this chunk's generated conformers."""
     minima = run_optimisation(
         conformers,
         global_optimiser.get_optimiser(),
@@ -139,16 +158,26 @@ def global_minima(
     )
 
 
-@dg.asset(io_manager_key="pandas_io_manager")
+@dg.asset(
+    io_manager_key="pandas_io_manager",
+    ins={
+        "local_minima": dg.AssetIn(partition_mapping=dg.AllPartitionMapping()),
+        "global_minima": dg.AssetIn(partition_mapping=dg.AllPartitionMapping()),
+    },
+)
 def aggregate_results(
-    context: dg.AssetExecutionContext,
     input_df: pd.DataFrame,
     docked_mols: dict,
-    local_minima: ConformerBatch,
-    global_minima: ConformerBatch,
+    local_minima: object,  # ConformerBatch (1 chunk) or list[ConformerBatch] (fan-in over chunks)
+    global_minima: object,
     config: OutputConfig,
 ) -> dg.MaterializeResult:
     """Aggregate results from local and global minima and save to output parquet file."""
+    # Fan-in: the pytorch io manager returns a list of per-chunk batches; cat back to the full set.
+    if isinstance(local_minima, list):
+        local_minima = ConformerBatch.cat(local_minima)
+    if isinstance(global_minima, list):
+        global_minima = ConformerBatch.cat(global_minima)
     docked_batch = ConformerBatch.from_data_list(
         [Conformer.from_rdkit(**docked_mols[id]) for id in docked_mols]
     )
@@ -156,9 +185,8 @@ def aggregate_results(
         input_df[MOL_COL_NAME] = input_df["mol_bytes"].apply(Chem.Mol)
 
     cfg = config.model_dump()
-    run_dir = f"{DATA_DIR}/{context.run_id}"
-    os.makedirs(run_dir, exist_ok=True)
-    cfg["parquet_path"] = f"{run_dir}/{os.path.basename(cfg['parquet_path'] or 'output.parquet')}"
+    os.makedirs(DATA_DIR, exist_ok=True)
+    cfg["parquet_path"] = f"{DATA_DIR}/{os.path.basename(cfg['parquet_path'] or 'output.parquet')}"
 
     output_df = process_output(input_df, docked_batch, local_minima, global_minima, **cfg)
 

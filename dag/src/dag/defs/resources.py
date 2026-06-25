@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import ClassVar
 
 import dagster as dg
 import pandas as pd
@@ -62,34 +63,65 @@ class GlobalOptimiserResource(OptimiserResource):
     """Global optimiser (hydra default.yaml: global_optimiser); defaults bound at registration."""
 
 
-class PyTorchIOManager(dg.ConfigurableIOManager):
-    """Stores tensors at {base_path}/{run_id}/{asset}.pt (run-scoped)."""
+class _ChunkedIOManager(dg.ConfigurableIOManager):
+    """IO at {base_path}/{asset}/result[_{chunk}].{EXT}.
+
+    Paths are keyed on asset name + chunk (no run id), so a fan-in asset reads every chunk
+    regardless of which run produced it — needed when chunks are materialised as separate
+    (parallel) runs. ``load_input`` returns a single object for an identity dependency, or the
+    combined result for a fan-in over chunks.
+    """
 
     base_path: str
+    EXT: ClassVar[str]
+
+    def _file(self, asset: str, chunk: str | None) -> str:
+        suffix = f"_{chunk}" if chunk is not None else ""
+        return f"{self.base_path}/{asset}/result{suffix}.{self.EXT}"
 
     def handle_output(self, context: dg.OutputContext, obj: object):
-        output_path = f"{self.base_path}/{context.run_id}/{context.step_key}.pt"
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        torch.save(obj, output_path)
+        chunk = context.asset_partition_key if context.has_asset_partitions else None
+        path = self._file(context.asset_key.path[-1], chunk)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self._dump(obj, path)
 
     def load_input(self, context: dg.InputContext) -> object:
-        out = context.upstream_output
-        return torch.load(f"{self.base_path}/{out.run_id}/{out.step_key}.pt")
+        asset = context.asset_key.path[-1]
+        chunks = context.asset_partition_keys if context.has_asset_partitions else [None]
+        objs = [self._load(self._file(asset, c)) for c in chunks]
+        return objs[0] if len(objs) == 1 else self._combine(objs)
+
+    def _dump(self, obj, path: str) -> None:
+        ...
+
+    def _load(self, path: str):
+        ...
+
+    def _combine(self, objs: list):
+        return objs
 
 
-class ParquetIOManager(dg.ConfigurableIOManager):
-    """Stores DataFrames at {base_path}/{run_id}/{step}.parquet (run-scoped)."""
+class PyTorchIOManager(_ChunkedIOManager):
+    EXT: ClassVar[str] = "pt"
 
-    base_path: str
+    def _dump(self, obj, path):
+        torch.save(obj, path)
 
-    def handle_output(self, context: dg.OutputContext, obj: pd.DataFrame):
-        output_path = f"{self.base_path}/{context.run_id}/{context.step_key}.parquet"
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        obj.to_parquet(output_path)
+    def _load(self, path):
+        return torch.load(path, weights_only=False)
 
-    def load_input(self, context: dg.InputContext) -> pd.DataFrame:
-        out = context.upstream_output
-        return pd.read_parquet(f"{self.base_path}/{out.run_id}/{out.step_key}.parquet")
+
+class ParquetIOManager(_ChunkedIOManager):
+    EXT: ClassVar[str] = "parquet"
+
+    def _dump(self, obj, path):
+        obj.to_parquet(path)
+
+    def _load(self, path):
+        return pd.read_parquet(path)
+
+    def _combine(self, objs):
+        return pd.concat(objs, ignore_index=True)
 
 
 @dg.definitions
