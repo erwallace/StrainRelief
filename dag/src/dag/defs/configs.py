@@ -50,7 +50,7 @@ class OutputConfig(dg.Config):
     """Config for aggregate_results -> process_output()."""
 
     threshold: float
-    parquet_path: str
+    parquet_path: str | None = None  # filename only; the run-scoped dir is set in the asset
     save_batch: bool = False
     molecule_attr: str | None = None
     id_col_name: str | None = None
