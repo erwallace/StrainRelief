@@ -60,7 +60,7 @@ dagster definitions validate -m dag.definitions   # or: dg check defs
 ### Running the pipeline
 
 The pipeline is exposed as a single job, `strain_relief`, covering every asset:
-`input_df → docked_mols → conformers → local_optimisation → global_optimisation →
+`input_df → docked_mols → conformers → local_minima → global_minima →
 aggregate_results → plot_results`.
 
 Run from the `dag/` directory with the venv activated. `run.yaml` is a complete example
@@ -110,8 +110,8 @@ Outputs use a flat, per-asset layout: `data/<run_id>/<asset_name>.<ext>`.
 | `input_df` | `pandas_io_manager` (parquet) | `input_df.parquet` |
 | `docked_mols` | default (filesystem, pickle) | Dagster instance storage (see note) |
 | `conformers` | `pytorch_io_manager` | `conformers.pt` |
-| `local_optimisation` | `pytorch_io_manager` | `local_optimisation.pt` |
-| `global_optimisation` | `pytorch_io_manager` | `global_optimisation.pt` |
+| `local_minima` | `pytorch_io_manager` | `local_minima.pt` |
+| `global_minima` | `pytorch_io_manager` | `global_minima.pt` |
 | `aggregate_results` | `pandas_io_manager` (parquet) | `aggregate_results.parquet` |
 | `plot_results` | default (returns `None`) | — |
 

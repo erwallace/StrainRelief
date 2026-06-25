@@ -48,12 +48,12 @@ ops:
       pruneRmsThresh: 0.1
       clearConfs: false
       numThreads: 0
-  local_optimisation:  # LocalOptimisationConfig
+  local_minima:  # LocalOptimisationConfig
     config:
       batch_size: 8
       num_workers: 0
       device: cpu
-  global_optimisation:  # GlobalOptimisationConfig
+  global_minima:  # GlobalOptimisationConfig
     config:
       batch_size: 8
       num_workers: 0
@@ -61,8 +61,11 @@ ops:
   aggregate_results:  # OutputConfig
     config:
       threshold: 16.1
-      parquet_path: ../data/example_output.parquet
+      parquet_path: null # overwritten in asset
       save_batch: false
       molecule_attr: null
       id_col_name: null
       mol_col_name: null
+  plot_results:  # PlotConfig
+    config:
+      true_strain_col: null

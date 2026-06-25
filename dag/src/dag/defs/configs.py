@@ -31,7 +31,7 @@ class ConformerConfig(dg.Config):
 
 
 class LocalOptimisationConfig(dg.Config):
-    """Config for local_optimisation -> run_optimisation()."""
+    """Config for local_minima -> run_optimisation()."""
 
     batch_size: int
     num_workers: int
@@ -39,7 +39,7 @@ class LocalOptimisationConfig(dg.Config):
 
 
 class GlobalOptimisationConfig(dg.Config):
-    """Config for global_optimisation -> run_optimisation()."""
+    """Config for global_minima -> run_optimisation()."""
 
     batch_size: int
     num_workers: int

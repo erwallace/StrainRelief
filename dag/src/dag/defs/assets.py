@@ -80,26 +80,26 @@ def conformers(docked_mols: dict, config: ConformerConfig) -> dg.MaterializeResu
 
 
 @dg.asset(io_manager_key="pytorch_io_manager")
-def local_optimisation(
+def local_minima(
     local_optimiser: LocalOptimiserResource,
     docked_mols: dict,
     config: LocalOptimisationConfig,
 ) -> dg.MaterializeResult:
-    """Run local optimisation on the docked conformers."""
+    """Locally optimised (minimised) conformers from the docked poses."""
     docked_batch = ConformerBatch.from_data_list(
         [Conformer.from_rdkit(**docked_mols[id]) for id in docked_mols]
     )
-    local_minima = run_optimisation(
+    minima = run_optimisation(
         docked_batch,
         local_optimiser.get_optimiser(),
         config.batch_size,
         config.num_workers,
         config.device,
     )
-    total, conv = per_ligand_conformer_counts(local_minima)
+    total, conv = per_ligand_conformer_counts(minima)
     n_no_converged = sum(1 for lid in total if conv.get(lid, 0) == 0)
     return dg.MaterializeResult(
-        value=local_minima,
+        value=minima,
         metadata={
             "num_ligands": len(total),
             "ligands_with_no_converged_conformers": n_no_converged,
@@ -108,24 +108,24 @@ def local_optimisation(
 
 
 @dg.asset(io_manager_key="pytorch_io_manager")
-def global_optimisation(
+def global_minima(
     global_optimiser: GlobalOptimiserResource,
     conformers: ConformerBatch,
     config: GlobalOptimisationConfig,
 ) -> dg.MaterializeResult:
-    """Run global optimisation on the generated conformers."""
-    global_minima = run_optimisation(
+    """Globally optimised (minimised) conformers from the generated conformers."""
+    minima = run_optimisation(
         conformers,
         global_optimiser.get_optimiser(),
         config.batch_size,
         config.num_workers,
         config.device,
     )
-    total, conv = per_ligand_conformer_counts(global_minima)
+    total, conv = per_ligand_conformer_counts(minima)
     converged_counts = [conv.get(lid, 0) for lid in total]
     n_no_converged = sum(1 for c in converged_counts if c == 0)
     return dg.MaterializeResult(
-        value=global_minima,
+        value=minima,
         metadata={
             "num_ligands": len(total),
             "ligands_with_no_converged_conformers": n_no_converged,
@@ -144,11 +144,11 @@ def aggregate_results(
     context: dg.AssetExecutionContext,
     input_df: pd.DataFrame,
     docked_mols: dict,
-    local_optimisation: ConformerBatch,
-    global_optimisation: ConformerBatch,
+    local_minima: ConformerBatch,
+    global_minima: ConformerBatch,
     config: OutputConfig,
 ) -> dg.MaterializeResult:
-    """Aggregate results from local and global optimisation and save to output parquet file."""
+    """Aggregate results from local and global minima and save to output parquet file."""
     docked_batch = ConformerBatch.from_data_list(
         [Conformer.from_rdkit(**docked_mols[id]) for id in docked_mols]
     )
@@ -160,9 +160,7 @@ def aggregate_results(
     os.makedirs(run_dir, exist_ok=True)
     cfg["parquet_path"] = f"{run_dir}/{os.path.basename(cfg['parquet_path'] or 'output.parquet')}"
 
-    output_df = process_output(
-        input_df, docked_batch, local_optimisation, global_optimisation, **cfg
-    )
+    output_df = process_output(input_df, docked_batch, local_minima, global_minima, **cfg)
 
     strain = output_df["ligand_strain"]
     n_total = len(output_df)
@@ -176,7 +174,7 @@ def aggregate_results(
             "pass_rate": float(n_pass / n_total) if n_total else 0.0,
             "negative_strains": int((strain < 0).sum()),
             "nan_strains": int(strain.isna().sum()),
-            "total_converged_conformers": int(global_optimisation.converged.sum()),
+            "total_converged_conformers": int(global_minima.converged.sum()),
             "schema": table_schema_md(output_df),
             "strain_hist": histogram_md(
                 strain.dropna(),
