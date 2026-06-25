@@ -11,97 +11,24 @@ from neural_optimiser.optimisers import BFGS
 from neural_optimiser.optimisers.base import Optimiser
 from pydantic import Field
 
-# Root directory for run outputs. Each run writes under DATA_DIR/<run_id>/ (see the IO
-# managers below and aggregate_results' final parquet), so runs never overwrite each other.
-# Absolute (resolved from the repo layout) so it is independent of the launch directory.
-# resources.py -> defs -> dag -> src -> dag(project) -> repo root; data/ sits at the repo root.
+from .configs import (
+    BFGSConfig,
+    CalculatorConfig,
+    MACEConfig,
+)
+
 DATA_DIR = str(Path(__file__).resolve().parents[4] / "data")
-
-
-class MACEConfig(dg.Config):
-    kind: Literal["mace"] = "mace"
-    model_paths: str
-    device: str = "cpu"
-    default_dtype: Literal["float32", "float64"] = "float32"
-
-    def build(self) -> Calculator:
-        return MACECalculator(
-            model_paths=self.model_paths, device=self.device, default_dtype=self.default_dtype
-        )
-
-
-class MMFF94Config(dg.Config):
-    kind: Literal["mmff94"] = "mmff94"
-
-    def build(self) -> Calculator:
-        return MMFF94Calculator()
-
-
-class FAIRChemConfig(dg.Config):
-    kind: Literal["fairchem"] = "fairchem"
-    model_paths: str
-    device: str = "cpu"
-    task_name: str = "omol"
-    default_dtype: Literal["float32", "float64"] = "float32"
-
-    def build(self) -> Calculator:
-        return FAIRChemCalculator(
-            model_paths=self.model_paths,
-            device=self.device,
-            task_name=self.task_name,
-            default_dtype=self.default_dtype,
-        )
-
-
-CalculatorConfig = Annotated[
-    MACEConfig | MMFF94Config | FAIRChemConfig, Field(discriminator="kind")
-]
-
-
-class BFGSConfig(dg.Config):
-    kind: Literal["bfgs"] = "bfgs"
-    max_step: float = 0.04
-    steps: int = 250
-    fmax: float | None = None
-    fexit: float | None = None
-
-    def build(self) -> Optimiser:
-        return BFGS(max_step=self.max_step, steps=self.steps, fmax=self.fmax, fexit=self.fexit)
-
-
-class _BaseOptimiserConfig(dg.Config):
-    """Placeholder so OptimiserConfig is a discriminated union (i.e. renders as a selector,
-    uniform with CalculatorConfig). The base Optimiser is abstract, so this is never selected;
-    it exists only until a second concrete optimiser (e.g. LBFGS) is added."""
-
-    kind: Literal["base"] = "base"
-
-    def build(self) -> Optimiser:
-        raise NotImplementedError(
-            "Select a concrete optimiser (e.g. bfgs); 'base' is a placeholder."
-        )
-
-
-OptimiserConfig = Annotated[BFGSConfig | _BaseOptimiserConfig, Field(discriminator="kind")]
-
-
-# --------------------------------------------------------------------------------------
-# Load-once calculator cache. The model load (torch.load) dominates step time, so we build
-# the calculator at most once per process, keyed on the resolved config.
-# --------------------------------------------------------------------------------------
 _CALCULATOR_CACHE: dict[str, Calculator] = {}
 
 
 def _get_or_build_calculator(config: CalculatorConfig) -> Calculator:
+    """Load-once calculator cache; keyed on resolved config."""
     key = config.model_dump_json()
     if key not in _CALCULATOR_CACHE:
         _CALCULATOR_CACHE[key] = config.build()
     return _CALCULATOR_CACHE[key]
 
 
-# --------------------------------------------------------------------------------------
-# Resources
-# --------------------------------------------------------------------------------------
 class CalculatorResource(dg.ConfigurableResource):
     """Holds the calculator selection; `get_calculator()` is load-once (see cache above)."""
 
