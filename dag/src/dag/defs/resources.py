@@ -1,20 +1,17 @@
 import os
 from pathlib import Path
-from typing import Annotated, Literal
 
 import dagster as dg
 import pandas as pd
 import torch
-from neural_optimiser.calculators import FAIRChemCalculator, MACECalculator, MMFF94Calculator
 from neural_optimiser.calculators.base import Calculator
-from neural_optimiser.optimisers import BFGS
 from neural_optimiser.optimisers.base import Optimiser
-from pydantic import Field
 
 from .configs import (
     BFGSConfig,
     CalculatorConfig,
     MACEConfig,
+    OptimiserConfig,
 )
 
 DATA_DIR = str(Path(__file__).resolve().parents[4] / "data")

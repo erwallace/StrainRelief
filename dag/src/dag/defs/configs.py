@@ -1,4 +1,3 @@
-import dagster as dg
 from typing import Annotated, Literal
 
 import dagster as dg
@@ -9,6 +8,7 @@ from neural_optimiser.optimisers.base import Optimiser
 from pydantic import Field
 
 # ---------- Assets Configs ----------
+
 
 class InputConfig(dg.Config):
     """Config for preprocess_data -> to_mols_dict()."""
@@ -56,7 +56,17 @@ class OutputConfig(dg.Config):
     id_col_name: str | None = None
     mol_col_name: str | None = None
 
+
+class PlotConfig(dg.Config):
+    """Config for plot_results."""
+
+    # Column in the input data holding the ground-truth strain (kcal/mol). When set, the
+    # predicted (ligand_strain) vs true scatterplot and accuracy metrics are produced.
+    true_strain_col: str | None = None
+
+
 # ---------- Resources Configs ----------
+
 
 class MACEConfig(dg.Config):
     kind: Literal["mace"] = "mace"
@@ -122,5 +132,6 @@ class _BaseOptimiserConfig(dg.Config):
         )
 
 
-OptimiserConfig: dg.Config = Annotated[BFGSConfig | _BaseOptimiserConfig, Field(discriminator="kind")]
-
+OptimiserConfig: dg.Config = Annotated[
+    BFGSConfig | _BaseOptimiserConfig, Field(discriminator="kind")
+]
